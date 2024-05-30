@@ -17,15 +17,41 @@ services:
     networks:
       - batchbe_network
 
-  celery:
+  worker1:
     build: .
-    command: celery -A batchbe worker --loglevel=info
+    command: celery -A batchbe worker -Q worker_1_queue --loglevel=info
     volumes:
       - .:/code
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=django-db
       - DATABASE_URL=postgres://hungnguyen:123@123a@host.docker.internal:5432/batch-be
+    depends_on:
+      - redis
+    networks:
+      - batchbe_network
+
+  worker2:
+    build: .
+    command: celery -A batchbe worker -Q worker_2_queue --loglevel=info
+    volumes:
+      - .:/code
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=django-db
+    depends_on:
+      - redis
+    networks:
+      - batchbe_network
+
+  worker3:
+    build: .
+    command: celery -A batchbe worker -Q worker_3_queue --loglevel=info
+    volumes:
+      - .:/code
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=django-db
     depends_on:
       - redis
     networks:

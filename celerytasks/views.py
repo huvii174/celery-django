@@ -3,6 +3,7 @@ from django.http import JsonResponse
 from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule
 import json
 from django.views.decorators.csrf import csrf_exempt
+from celery import current_app
 
 @csrf_exempt
 def create_interval_task(request):
@@ -111,5 +112,25 @@ def delete_task(request, task_id):
         task = PeriodicTask.objects.get(id=task_id)
         task.delete()
         return JsonResponse({'status': 'success', 'message': 'Task deleted successfully.'})
+
+    return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
+
+@csrf_exempt
+def assign_task_to_worker(request):
+    if request.method == 'POST':
+        data = json.loads(request.body)
+        task_name = data.get('task_name')
+        worker_id = data.get('worker_id')
+        args = data.get('args', [])
+
+        if not task_name or not worker_id:
+            return JsonResponse({'status': 'failure', 'message': 'Task name and worker ID are required.'})
+
+        queue_name = f'worker_{worker_id}_queue'
+
+        # Send task to the specified worker's queue
+        current_app.send_task(task_name, args=args, queue=queue_name)
+
+        return JsonResponse({'status': 'success', 'message': f'Task {task_name} assigned to worker {worker_id}.'})
 
     return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
