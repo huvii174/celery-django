@@ -1,0 +1,73 @@
+version: '3'
+
+services:
+  web:
+    build: .
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/code
+    ports:
+      - "8000:8000"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=django-db
+      - DATABASE_URL=postgres://hungnguyen:123@123a@host.docker.internal:5432/batch-be
+    depends_on:
+      - redis
+    networks:
+      - batchbe_network
+
+  celery:
+    build: .
+    command: celery -A batchbe worker --loglevel=info
+    volumes:
+      - .:/code
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=django-db
+      - DATABASE_URL=postgres://hungnguyen:123@123a@host.docker.internal:5432/batch-be
+    depends_on:
+      - redis
+    networks:
+      - batchbe_network
+
+  celerybeat:
+    build: .
+    command: celery -A batchbe beat --loglevel=info
+    volumes:
+      - .:/code
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=django-db
+      - DATABASE_URL=postgres://hungnguyen:123@123a@host.docker.internal:5432/batch-be
+    depends_on:
+      - redis
+    networks:
+      - batchbe_network
+
+  flower:
+    build: .
+    command: celery -A batchbe flower --address=0.0.0.0 --port=5555
+    ports:
+      - "5555:5555"
+    volumes:
+      - .:/code
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=django-db
+      - DATABASE_URL=postgres://hungnguyen:123@123a@host.docker.internal:5432/batch-be
+    depends_on:
+      - redis
+    networks:
+      - batchbe_network
+
+  redis:
+    image: "redis:alpine"
+    ports:
+      - "6379:6379"
+    networks:
+      - batchbe_network
+
+networks:
+  batchbe_network:
+    driver: bridge

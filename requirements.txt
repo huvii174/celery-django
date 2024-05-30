@@ -1,0 +1,9 @@
+Django>=3.0,<4.0
+celery
+redis
+psycopg2-binary
+django-celery-results
+django-celery-beat
+dj-database-url
+flower
+backports.zoneinfo
