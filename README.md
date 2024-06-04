@@ -27,11 +27,12 @@ Ensure that PostgreSQL is running and accessible from your host machine.
 
 Configure environment variables:
 
-Update the environment variables in docker-compose.yml with your PostgreSQL credentials:
-
-```yaml
-environment:
-  - DATABASE_URL=postgres://your_db_user:your_db_password@host.docker.internal:5432/your_db_name
+Create and update .env file following env-sample
+```dotenv
+POSTGRES_HOST="host.docker.internal"
+POSTGRES_USERNAME="username"
+POSTGRES_PASSWORD="password"
+POSTGRES_DB="batch-be"
 ```
 
 #### 2.Install dependencies:
@@ -47,6 +48,7 @@ django-celery-results
 django-celery-beat
 dj-database-url
 flower
+python-dotenv
 backports.zoneinfo
 ```
 
