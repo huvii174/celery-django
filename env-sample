@@ -1,0 +1,4 @@
+POSTGRES_HOST="host.docker.internal"
+POSTGRES_USERNAME="hungnguyen"
+POSTGRES_PASSWORD="123@123a"
+POSTGRES_DB="batch-be"
