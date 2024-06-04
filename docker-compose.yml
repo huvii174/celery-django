@@ -8,26 +8,39 @@ services:
       - .:/code
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=django-db
-      - DATABASE_URL=postgres://hungnguyen:123@123a@host.docker.internal:5432/batch-be
+      - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
+      - ALLOWED_HOSTS=web,localhost,127.0.0.1
     depends_on:
       - redis
     networks:
       - batchbe_network
+    entrypoint: /code/entrypoint.sh
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://web:8000/celerytasks/health/"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
 
   worker1:
     build: .
     command: celery -A batchbe worker -Q worker_1_queue --loglevel=info
     volumes:
       - .:/code
+    env_file:
+      - .env
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=django-db
-      - DATABASE_URL=postgres://hungnguyen:123@123a@host.docker.internal:5432/batch-be
+      - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
+      - ALLOWED_HOSTS=web,localhost,127.0.0.1
     depends_on:
-      - redis
+      web:
+        condition: service_healthy
     networks:
       - batchbe_network
 
@@ -36,11 +49,16 @@ services:
     command: celery -A batchbe worker -Q worker_2_queue --loglevel=info
     volumes:
       - .:/code
+    env_file:
+      - .env
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=django-db
+      - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
+      - ALLOWED_HOSTS=web,localhost,127.0.0.1
     depends_on:
-      - redis
+      web:
+        condition: service_healthy
     networks:
       - batchbe_network
 
@@ -49,25 +67,34 @@ services:
     command: celery -A batchbe worker -Q worker_3_queue --loglevel=info
     volumes:
       - .:/code
+    env_file:
+      - .env
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=django-db
+      - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
+      - ALLOWED_HOSTS=web,localhost,127.0.0.1
     depends_on:
-      - redis
+      web:
+        condition: service_healthy
     networks:
       - batchbe_network
 
   celerybeat:
     build: .
-    command: celery -A batchbe beat --loglevel=info
+    command: celery -A batchbe beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
     volumes:
       - .:/code
+    env_file:
+      - .env
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=django-db
-      - DATABASE_URL=postgres://hungnguyen:123@123a@host.docker.internal:5432/batch-be
+      - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
+      - ALLOWED_HOSTS=web,localhost,127.0.0.1
     depends_on:
-      - redis
+      web:
+        condition: service_healthy
     networks:
       - batchbe_network
 
@@ -78,12 +105,16 @@ services:
       - "5555:5555"
     volumes:
       - .:/code
+    env_file:
+      - .env
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=django-db
-      - DATABASE_URL=postgres://hungnguyen:123@123a@host.docker.internal:5432/batch-be
+      - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
+      - ALLOWED_HOSTS=web,localhost,127.0.0.1
     depends_on:
-      - redis
+      web:
+        condition: service_healthy
     networks:
       - batchbe_network
 

@@ -134,3 +134,7 @@ def assign_task_to_worker(request):
         return JsonResponse({'status': 'success', 'message': f'Task {task_name} assigned to worker {worker_id}.'})
 
     return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
+
+@csrf_exempt
+def health_check(request):
+    return JsonResponse({"status": "ok"})

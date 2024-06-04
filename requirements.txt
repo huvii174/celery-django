@@ -6,4 +6,5 @@ django-celery-results
 django-celery-beat
 dj-database-url
 flower
+python-dotenv
 backports.zoneinfo
