@@ -1,9 +1,12 @@
-from django.shortcuts import render
 from django.http import JsonResponse
-from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule
+from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule, ClockedSchedule
 import json
 from django.views.decorators.csrf import csrf_exempt
 from celery import current_app
+from dateutil.rrule import rrulestr
+from django.utils import timezone
+from datetime import datetime
+
 
 @csrf_exempt
 def create_interval_task(request):
@@ -115,6 +118,7 @@ def delete_task(request, task_id):
 
     return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
 
+
 @csrf_exempt
 def assign_task_to_worker(request):
     if request.method == 'POST':
@@ -134,6 +138,76 @@ def assign_task_to_worker(request):
         return JsonResponse({'status': 'success', 'message': f'Task {task_name} assigned to worker {worker_id}.'})
 
     return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
+
+
+@csrf_exempt
+def rrule_schedule_task(request):
+    if request.method == 'POST':
+        try:
+            # Parse JSON request body
+            data = json.loads(request.body)
+            rrule_str = data['rrule_string']
+            start_date = timezone.make_aware(datetime.fromisoformat(data['start_date']))
+            end_date = timezone.make_aware(datetime.fromisoformat(data['end_date']))
+            run_count = data['run_count']
+
+            # Calculate the next run times
+            next_runs = get_next_runs(rrule_str, run_count, start_date, end_date)
+
+            # Create a ClockedSchedule for each run time
+            clocked_schedules = []
+            for next_run in next_runs:
+                clocked_schedule = ClockedSchedule.objects.create(clocked_time=next_run)
+                clocked_schedules.append(clocked_schedule)
+
+            # Create PeriodicTask for each ClockedSchedule
+            tasks = []
+            for i, clocked_schedule in enumerate(clocked_schedules):
+                task_name = f'Clocked Task {i + 1} at {clocked_schedule.clocked_time} {rrule_str}'
+                task, created = PeriodicTask.objects.get_or_create(
+                    clocked=clocked_schedule,
+                    name=task_name,
+                    task='your_app.tasks.your_task',  # Replace with your actual task
+                    defaults={'one_off': True}
+                )
+                if not created:
+                    task.clocked = clocked_schedule
+                    task.enabled = True
+                    task.save()
+                tasks.append(task)
+
+            return JsonResponse({'status': 'success', 'tasks': [task.id for task in tasks]})
+        except KeyError as e:
+            return JsonResponse({'status': 'error', 'message': f'Missing parameter: {str(e)}'}, status=400)
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+    else:
+        return JsonResponse({'status': 'error', 'message': 'Invalid request method'}, status=405)
+
+
+def get_next_runs(rrule_str, run_count, start_date, end_date):
+    """
+    Calculate the next run times based on the input rrule string, start date, and run count.
+
+    :param rrule_str: The recurrence rule string (RFC 2445 format).
+    :param run_count: The number of next occurrences to find.
+    :param start_date: The start datetime for the recurrence rule.
+    :param end_date: The end datetime for the recurrence rule.
+    :return: A list of next run datetimes.
+    """
+    rule = rrulestr(rrule_str, dtstart=start_date)
+    next_runs = []
+
+    current_time = start_date
+    for _ in range(run_count):
+        next_run = rule.after(current_time)
+        if next_run is None or next_run > end_date:
+            break
+        next_runs.append(next_run)
+        current_time = next_run
+
+    return next_runs
+
 
 @csrf_exempt
 def health_check(request):
