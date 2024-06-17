@@ -6,6 +6,9 @@ from celery import current_app
 from dateutil.rrule import rrulestr
 from django.utils import timezone
 from datetime import datetime
+from .models import ScheduleJob, ScheduledTask
+from batchbe.celery import app
+from celery.result import AsyncResult
 
 
 @csrf_exempt
@@ -118,6 +121,15 @@ def delete_task(request, task_id):
 
     return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
 
+@csrf_exempt
+def force_terminate_task(request):
+    if request.method == 'POST':
+        data = json.loads(request.body)
+        task_id = data.get('task_id')
+        result = AsyncResult(task_id, app=app)
+        result.revoke(terminate=True, signal='SIGKILL')
+        return JsonResponse({'status': 'Task terminated'})
+
 
 @csrf_exempt
 def assign_task_to_worker(request):
@@ -150,6 +162,14 @@ def rrule_schedule_task(request):
             start_date = timezone.make_aware(datetime.fromisoformat(data['start_date']))
             end_date = timezone.make_aware(datetime.fromisoformat(data['end_date']))
             run_count = data['run_count']
+            job_action = data['job_action']
+            arg = json.dumps([4, 4])
+
+            schedule_job, created = ScheduleJob.objects.get_or_create(job_action=job_action, rrule_str=rrule_str,
+                                                                      start_date=start_date, end_date=end_date,
+                                                                      max_run=run_count)
+            if not created:
+                schedule_job.save()
 
             # Calculate the next run times
             next_runs = get_next_runs(rrule_str, run_count, start_date, end_date)
@@ -167,14 +187,23 @@ def rrule_schedule_task(request):
                 task, created = PeriodicTask.objects.get_or_create(
                     clocked=clocked_schedule,
                     name=task_name,
-                    task='your_app.tasks.your_task',  # Replace with your actual task
+                    task='celerytasks.tasks.add',
+                    args=arg,
                     defaults={'one_off': True}
                 )
                 if not created:
                     task.clocked = clocked_schedule
                     task.enabled = True
+                    task.description = schedule_job.id
                     task.save()
+
                 tasks.append(task)
+
+                schedule_task, created = ScheduledTask.objects.get_or_create(task_id=task, job_id=schedule_job,
+                                                                             status=ScheduledTask.STATUS_CREATED)
+
+                if not created:
+                    schedule_task.save()
 
             return JsonResponse({'status': 'success', 'tasks': [task.id for task in tasks]})
         except KeyError as e:
