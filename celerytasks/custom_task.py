@@ -1,6 +1,7 @@
 from celery import Task
 from celerytasks.models import TaskDetail, JobSettings
 from logger import get_logger
+import requests
 from django_celery_beat.models import PeriodicTask
 from .views import convert_task_detail_to_log_data
 
@@ -33,9 +34,11 @@ class RepeatTask(Task):
                 raise Exception(f'Error in task {self.name}: {e}')
 
     def before_start(self, task_id, args, kwargs):
+        logger.info(f'Hook before_start for task with id: {task_id}')
         try:
             task_name = args[1]
             run_account = args[3]
+            next_run_date = args[4]
             task_detail = TaskDetail.objects.filter(task_name=task_name).first()
             if task_detail is None:
                 logger.error(f'TaskDetail not found for task_name {task_name}.')
@@ -49,6 +52,7 @@ class RepeatTask(Task):
             return
 
     def on_success(self, retval, task_id, args, kwargs):
+        logger.info(f'Hook on_success for task with id: {task_id}')
         try:
             task_detail = TaskDetail.objects.filter(celery_task_id=task_id).first()
             if task_detail is None:
@@ -60,6 +64,7 @@ class RepeatTask(Task):
             logger.error(f'Error in task {self.name}: {e}')
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
+        logger.info(f'Hook on_failure for task with id: {task_id}')
         try:
             task_detail = TaskDetail.objects.filter(celery_task_id=task_id).first()
             if task_detail is None:
@@ -72,6 +77,7 @@ class RepeatTask(Task):
             return
 
     def on_retry(self, exc, task_id, args, kwargs, einfo):
+        logger.info(f'Hook on_retry for task with id: {task_id}')
         try:
             task_name = args[1]
             task_detail = TaskDetail.objects.filter(celery_task_id=task_id).first()
@@ -90,6 +96,7 @@ class RepeatTask(Task):
             return
 
     def after_return(self, status, retval, task_id, args, kwargs, einfo):
+        logger.info(f'Hook after_return for task with id: {task_id}')
         try:
             task_detail = TaskDetail.objects.filter(celery_task_id=task_id).first()
             if task_detail is None:

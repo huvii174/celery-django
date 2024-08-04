@@ -56,6 +56,7 @@ def rrule_schedule_task(request):
 
             job_type = data.get('job_type')
             job_action = data.get('job_action')
+            job_body = data.get('job_body')
             rrule_str = data['repeat_interval']
             start_date = timezone.make_aware(datetime.fromisoformat(data['start_date']))
             end_date = timezone.make_aware(datetime.fromisoformat(data['end_date']))
@@ -71,21 +72,25 @@ def rrule_schedule_task(request):
 
             function_name = f'celerytasks.tasks.{job_type.lower()}'
 
-            job_settings, created = JobSettings.objects.get_or_create(job_id=job_id, queue_name=queue_name,
-                                                                      function_name=function_name,
-                                                                      start_date=start_date,
-                                                                      end_date=end_date, repeat_interval=rrule_str,
-                                                                      max_run_duration=max_run_duration,
-                                                                      max_run=max_run,
-                                                                      max_failure=max_failures, priority=priority,
-                                                                      is_enable=enable, auto_drop=auto_drop,
-                                                                      restart_on_failure=restart_on_fail,
-                                                                      restartable=restartable, job_type=job_type,
-                                                                      job_action=job_action, run_account=run_account,
-                                                                      retry_delay=retry_delay)
-
-            if not created:
-                job_settings.save()
+            try:
+                job_settings = JobSettings.objects.create(job_id=job_id, queue_name=queue_name,
+                                                          function_name=function_name,
+                                                          start_date=start_date,
+                                                          end_date=end_date, repeat_interval=rrule_str,
+                                                          max_run_duration=max_run_duration,
+                                                          max_run=max_run,
+                                                          max_failure=max_failures, priority=priority,
+                                                          is_enable=enable, auto_drop=auto_drop,
+                                                          restart_on_failure=restart_on_fail,
+                                                          restartable=restartable, job_type=job_type,
+                                                          job_action=job_action,
+                                                          run_account=run_account,
+                                                          retry_delay=retry_delay, job_body=job_body)
+                logger.info(f'Save job_settings: {job_settings} to database successfully')
+            except Exception as e:
+                logger.error(f'Cannot save job_settings to database error: {e}')
+                return JsonResponse({'status': 'error', 'message': f'Save job_settings to database with exception {e}'},
+                                    status=405)
 
             # Calculate the next run times
             next_runs = get_list_run_date(rrule_str, run_count, start_date, end_date)
@@ -114,28 +119,36 @@ def rrule_schedule_task(request):
             for i, clocked_schedule in enumerate(clocked_schedules):
                 task_name = celery_tasks[i].celery_task_name
 
-                task, created = PeriodicTask.objects.get_or_create(
-                    clocked=clocked_schedule,
-                    name=task_name,
-                    task=function_name,
-                    defaults={'one_off': True},
-                    description=job_id,
-                    queue=queue_name,
-                    exchange=queue_name,
-                    priority=priority,
-                    args=json.dumps([job_action, task_name, job_id, run_account, celery_tasks[i].next_run_date]),
-                )
-                if not created:
-                    task.clocked = clocked_schedule
-                    task.enabled = True
-                    task.queue = queue_name
-                    task.save()
+                try:
+                    task = PeriodicTask.objects.get_or_create(
+                        clocked=clocked_schedule,
+                        name=task_name,
+                        task=function_name,
+                        defaults={'one_off': True},
+                        description=job_id,
+                        queue=queue_name,
+                        exchange=queue_name,
+                        enabled=True,
+                        priority=priority,
+                        args=json.dumps([job_action, task_name, job_id, run_account, celery_tasks[i].next_run_date]),
+                    )
+                    tasks.append(task)
+                    logger.info(f'Save PeriodicTask: {task} to database successfully')
 
-                task_detail, created = TaskDetail.objects.get_or_create(job=job_settings, task_name=task_name,
-                                                                        run_date=clocked_schedule.clocked_time)
-                if not created:
-                    task_detail.save()
-                tasks.append(task)
+                except Exception as e:
+                    logger.error(f'Cannot save PeriodicTask to database error {e}')
+                    return JsonResponse(
+                        {'status': 'error', 'message': f'Cannot save PeriodicTask to database exception {e}'},
+                        status=405)
+                try:
+                    task_detail = TaskDetail.objects.get_or_create(job=job_settings, task_name=task_name,
+                                                                   run_date=clocked_schedule.clocked_time)
+                    logger.info(f'Save TaskDetail: {task_detail} to database successfully')
+                except Exception as e:
+                    logger.error(f'Cannot save TaskDetail to database error {e}')
+                    return JsonResponse(
+                        {'status': 'error', 'message': f'Cannot save TaskDetail to database exception {e}'},
+                        status=405)
 
             task_responses = [
                 SchedulerTaskResponse(task.celery_task_name, task.run_date)

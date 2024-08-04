@@ -29,6 +29,7 @@ class JobSettings(models.Model):
 
     job_type = models.CharField(max_length=50, choices=JobTypeEnum.choices)
     job_action = models.TextField(blank=True, null=True)
+    job_body = models.JSONField(blank=True, null=True)
     run_count = models.IntegerField(default=0)
     failure_count = models.IntegerField(default=0)
     retry_count = models.IntegerField(default=0)
