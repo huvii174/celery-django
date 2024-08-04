@@ -15,6 +15,9 @@ services:
       - CELERY_RESULT_BACKEND=django-db
       - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
       - ALLOWED_HOSTS=web,localhost,127.0.0.1
+      - LOG_FILE=/var/log/batch-be.log
+      - LOG_MAX_BYTES=10485760
+      - LOG_BACKUP_COUNT=7
     depends_on:
       - redis
     networks:
@@ -38,6 +41,9 @@ services:
       - CELERY_RESULT_BACKEND=django-db
       - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
       - ALLOWED_HOSTS=web,localhost,127.0.0.1
+      - LOG_FILE=/var/log/worker1.log
+      - LOG_MAX_BYTES=10485760
+      - LOG_BACKUP_COUNT=7
     depends_on:
       web:
         condition: service_healthy
@@ -56,24 +62,9 @@ services:
       - CELERY_RESULT_BACKEND=django-db
       - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
       - ALLOWED_HOSTS=web,localhost,127.0.0.1
-    depends_on:
-      web:
-        condition: service_healthy
-    networks:
-      - batchbe_network
-
-  worker3:
-    build: .
-    command: celery -A batchbe worker -Q worker_3_queue --loglevel=info
-    volumes:
-      - .:/code
-    env_file:
-      - .env
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=django-db
-      - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
-      - ALLOWED_HOSTS=web,localhost,127.0.0.1
+      - LOG_FILE=/var/log/worker2.log
+      - LOG_MAX_BYTES=10485760
+      - LOG_BACKUP_COUNT=7
     depends_on:
       web:
         condition: service_healthy
@@ -92,6 +83,9 @@ services:
       - CELERY_RESULT_BACKEND=django-db
       - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
       - ALLOWED_HOSTS=web,localhost,127.0.0.1
+      - LOG_FILE=/var/log/beat.log
+      - LOG_MAX_BYTES=10485760
+      - LOG_BACKUP_COUNT=7
     depends_on:
       web:
         condition: service_healthy
@@ -112,6 +106,9 @@ services:
       - CELERY_RESULT_BACKEND=django-db
       - DATABASE_URL=postgres://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/${POSTGRES_DB}
       - ALLOWED_HOSTS=web,localhost,127.0.0.1
+      - LOG_FILE=/var/log/flower.log
+      - LOG_MAX_BYTES=10485760
+      - LOG_BACKUP_COUNT=7
     depends_on:
       web:
         condition: service_healthy

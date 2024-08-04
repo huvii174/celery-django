@@ -1,115 +1,27 @@
 from django.http import JsonResponse
-from django_celery_beat.models import PeriodicTask, IntervalSchedule, CrontabSchedule, ClockedSchedule
+from django_celery_beat.models import PeriodicTask, ClockedSchedule
 import json
 from django.views.decorators.csrf import csrf_exempt
-from celery import current_app
-from dateutil.rrule import rrulestr
+from logger import get_logger
+from .utils import get_list_run_date, get_next_run
 from django.utils import timezone
 from datetime import datetime
-from .models import ScheduleJob, ScheduledTask
+from django.db.models import Max
 from batchbe.celery import app
+from .models import JobSettings, TaskDetail
 from celery.result import AsyncResult
+from request_entities.schedule_task import SchedulerTaskResponse
+import requests
+import uuid
+
+logger = get_logger()
 
 
-@csrf_exempt
-def create_interval_task(request):
-    if request.method == 'POST':
-        data = json.loads(request.body)
-        task_name = data.get('task_name', 'celerytasks.tasks.add')
-        interval = data.get('interval', 10)
-        args = data.get('args', [4, 4])
-
-        schedule, created = IntervalSchedule.objects.get_or_create(
-            every=interval,
-            period=IntervalSchedule.SECONDS,
-        )
-
-        PeriodicTask.objects.create(
-            interval=schedule,
-            name=f'{task_name}-{interval}',
-            task=task_name,
-            args=json.dumps(args),
-        )
-        return JsonResponse({'status': 'success', 'message': 'Task scheduled successfully.'})
-
-    return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
-
-
-@csrf_exempt
-def create_cron_task(request):
-    if request.method == 'POST':
-        data = json.loads(request.body)
-        task_name = data.get('task_name', 'celerytasks.tasks.add')
-        minute = data.get('minute', '*')
-        hour = data.get('hour', '*')
-        day_of_week = data.get('day_of_week', '*')
-        day_of_month = data.get('day_of_month', '*')
-        month_of_year = data.get('month_of_year', '*')
-        args = data.get('args', [4, 4])
-
-        schedule, created = CrontabSchedule.objects.get_or_create(
-            minute=minute,
-            hour=hour,
-            day_of_week=day_of_week,
-            day_of_month=day_of_month,
-            month_of_year=month_of_year,
-        )
-
-        PeriodicTask.objects.create(
-            crontab=schedule,
-            name=f'{task_name}-{minute}-{hour}-{day_of_week}-{day_of_month}-{month_of_year}',
-            task=task_name,
-            args=json.dumps(args),
-        )
-        return JsonResponse({'status': 'success', 'message': 'Task scheduled successfully.'})
-
-    return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
-
-
-@csrf_exempt
-def update_task(request, task_id):
-    if request.method == 'PUT':
-        data = json.loads(request.body)
-        task = PeriodicTask.objects.get(id=task_id)
-
-        task_name = data.get('task_name', task.task)
-        args = data.get('args', json.loads(task.args))
-
-        task.task = task_name
-        task.args = json.dumps(args)
-        task.save()
-
-        if 'interval' in data:
-            interval = data.get('interval')
-            schedule, created = IntervalSchedule.objects.get_or_create(
-                every=interval,
-                period=IntervalSchedule.SECONDS,
-            )
-            task.interval = schedule
-            task.crontab = None
-            task.save()
-
-        if 'minute' in data or 'hour' in data or 'day_of_week' in data or 'day_of_month' in data or 'month_of_year' in data:
-            minute = data.get('minute', task.crontab.minute)
-            hour = data.get('hour', task.crontab.hour)
-            day_of_week = data.get('day_of_week', task.crontab.day_of_week)
-            day_of_month = data.get('day_of_month', task.crontab.day_of_month)
-            month_of_year = data.get('month_of_year', task.crontab.month_of_year)
-
-            schedule, created = CrontabSchedule.objects.get_or_create(
-                minute=minute,
-                hour=hour,
-                day_of_week=day_of_week,
-                day_of_month=day_of_month,
-                month_of_year=month_of_year,
-            )
-            task.crontab = schedule
-            task.interval = None
-            task.save()
-
-        return JsonResponse({'status': 'success', 'message': 'Task updated successfully.'})
-
-    return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
+class CeleryBeTask:
+    def __init__(self, celery_task_name, run_date, next_run_date):
+        self.celery_task_name = celery_task_name
+        self.run_date = run_date
+        self.next_run_date = next_run_date
 
 
 @csrf_exempt
@@ -121,91 +33,173 @@ def delete_task(request, task_id):
 
     return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
 
-@csrf_exempt
-def force_terminate_task(request):
-    if request.method == 'POST':
-        data = json.loads(request.body)
-        task_id = data.get('task_id')
-        result = AsyncResult(task_id, app=app)
-        result.revoke(terminate=True, signal='SIGKILL')
-        return JsonResponse({'status': 'Task terminated'})
-
-
-@csrf_exempt
-def assign_task_to_worker(request):
-    if request.method == 'POST':
-        data = json.loads(request.body)
-        task_name = data.get('task_name')
-        worker_id = data.get('worker_id')
-        args = data.get('args', [])
-
-        if not task_name or not worker_id:
-            return JsonResponse({'status': 'failure', 'message': 'Task name and worker ID are required.'})
-
-        queue_name = f'worker_{worker_id}_queue'
-
-        # Send task to the specified worker's queue
-        current_app.send_task(task_name, args=args, queue=queue_name)
-
-        return JsonResponse({'status': 'success', 'message': f'Task {task_name} assigned to worker {worker_id}.'})
-
-    return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
-
 
 @csrf_exempt
 def rrule_schedule_task(request):
     if request.method == 'POST':
         try:
-            # Parse JSON request body
-            data = json.loads(request.body)
-            rrule_str = data['rrule_string']
+            required_fields = ['job_id', 'max_run_duration', 'max_run', 'max_failure', 'is_enable', 'auto_drop',
+                               'restart_on_failure', 'restartable', 'priority', 'job_type', 'job_action',
+                               'repeat_interval', 'start_date', 'end_date', 'max_run', 'queue_name', 'user_name',
+                               'retry_delay']
+            data = get_request_data(request, required_fields)
+            logger.info(f'Received request to create interval task with body {json.loads(request.body)}')
+            job_id = data.get('job_id')
+            max_run_duration = data.get('max_run_duration')
+            max_run = data.get('max_run')
+            max_failures = data.get('max_failure')
+            enable = data.get('is_enable')
+            auto_drop = data.get('auto_drop')
+            restart_on_fail = data.get('restart_on_failure')
+            restartable = data.get('restartable')
+            priority = data.get('priority')
+
+            job_type = data.get('job_type')
+            job_action = data.get('job_action')
+            rrule_str = data['repeat_interval']
             start_date = timezone.make_aware(datetime.fromisoformat(data['start_date']))
             end_date = timezone.make_aware(datetime.fromisoformat(data['end_date']))
-            run_count = data['run_count']
-            job_action = data['job_action']
-            arg = json.dumps([4, 4])
+            run_count = data['max_run']
+            queue_name = data.get('queue_name')
+            run_account = data.get('user_name')
+            retry_delay = data.get('retry_delay')
 
-            schedule_job, created = ScheduleJob.objects.get_or_create(job_action=job_action, rrule_str=rrule_str,
-                                                                      start_date=start_date, end_date=end_date,
-                                                                      max_run=run_count)
+            # Ensure task_func and task_name, queue_name are provided
+            if not job_type or not job_id or not queue_name:
+                return JsonResponse(
+                    {'status': 'failure', 'message': 'Job function and job name and queue name are required.'})
+
+            function_name = f'celerytasks.tasks.{job_type.lower()}'
+
+            job_settings, created = JobSettings.objects.get_or_create(job_id=job_id, queue_name=queue_name,
+                                                                      function_name=function_name,
+                                                                      start_date=start_date,
+                                                                      end_date=end_date, repeat_interval=rrule_str,
+                                                                      max_run_duration=max_run_duration,
+                                                                      max_run=max_run,
+                                                                      max_failure=max_failures, priority=priority,
+                                                                      is_enable=enable, auto_drop=auto_drop,
+                                                                      restart_on_failure=restart_on_fail,
+                                                                      restartable=restartable, job_type=job_type,
+                                                                      job_action=job_action, run_account=run_account,
+                                                                      retry_delay=retry_delay)
+
             if not created:
-                schedule_job.save()
+                job_settings.save()
 
             # Calculate the next run times
-            next_runs = get_next_runs(rrule_str, run_count, start_date, end_date)
+            next_runs = get_list_run_date(rrule_str, run_count, start_date, end_date)
 
             # Create a ClockedSchedule for each run time
             clocked_schedules = []
-            for next_run in next_runs:
+            celery_tasks = []
+            for i, next_run in enumerate(next_runs):
                 clocked_schedule = ClockedSchedule.objects.create(clocked_time=next_run)
                 clocked_schedules.append(clocked_schedule)
 
+                # Determine the next_run_date (next element in the list or None if it's the last one)
+                next_run_date = next_runs[i + 1] if i + 1 < len(next_runs) else None
+
+                # Create CeleryBeTask object with the current run time and next_run_date
+                celery_be_task = CeleryBeTask(
+                    celery_task_name=str(uuid.uuid4()),
+                    run_date=next_run,
+                    next_run_date=str(next_run_date)
+                )
+                celery_tasks.append(celery_be_task)
+
             # Create PeriodicTask for each ClockedSchedule
+            # TODO: Refactor
             tasks = []
             for i, clocked_schedule in enumerate(clocked_schedules):
-                task_name = f'Clocked Task {i + 1} at {clocked_schedule.clocked_time} {rrule_str}'
+                task_name = celery_tasks[i].celery_task_name
+
                 task, created = PeriodicTask.objects.get_or_create(
                     clocked=clocked_schedule,
                     name=task_name,
-                    task='celerytasks.tasks.add',
-                    args=arg,
-                    defaults={'one_off': True}
+                    task=function_name,
+                    defaults={'one_off': True},
+                    description=job_id,
+                    queue=queue_name,
+                    exchange=queue_name,
+                    priority=priority,
+                    args=json.dumps([job_action, task_name, job_id, run_account, celery_tasks[i].next_run_date]),
                 )
                 if not created:
                     task.clocked = clocked_schedule
                     task.enabled = True
-                    task.description = schedule_job.id
+                    task.queue = queue_name
                     task.save()
 
+                task_detail, created = TaskDetail.objects.get_or_create(job=job_settings, task_name=task_name,
+                                                                        run_date=clocked_schedule.clocked_time)
+                if not created:
+                    task_detail.save()
                 tasks.append(task)
 
-                schedule_task, created = ScheduledTask.objects.get_or_create(task_id=task, job_id=schedule_job,
-                                                                             status=ScheduledTask.STATUS_CREATED)
+            task_responses = [
+                SchedulerTaskResponse(task.celery_task_name, task.run_date)
+                for task in celery_tasks]
+            task_dicts = [task_response.to_dict() for task_response in task_responses]
+            logger.info(f'Created interval task with job_id {job_id} and tasks {task_dicts}')
+            return JsonResponse({'status': 'success', 'next_run_date': next_runs[0], 'tasks': task_dicts})
+        except KeyError as e:
+            logger.error(f'Missing parameter: {str(e)}')
+            return JsonResponse({'status': 'error', 'message': f'Missing parameter: {str(e)}'}, status=400)
+        except Exception as e:
+            logger.error(f'Error in creating interval task: {e}')
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+    else:
+        return JsonResponse({'status': 'error', 'message': 'Invalid request method'}, status=405)
 
-                if not created:
-                    schedule_task.save()
 
-            return JsonResponse({'status': 'success', 'tasks': [task.id for task in tasks]})
+@csrf_exempt
+def manually_run(request):
+    if request.method == 'POST':
+        try:
+            required_fields = ['job_id', 'job_type', 'job_action', 'queue_name', 'user_name']
+            data = get_request_data(request, required_fields)
+            job_id = data.get('job_id')
+            job_type = data.get('job_type')
+            job_action = data.get('job_action')
+            queue_name = data.get('queue_name')
+            run_account = data.get('user_name')
+
+            if not job_type or not queue_name or not job_action or not job_id:
+                return JsonResponse(
+                    {'status': 'failure', 'message': 'Job type, job action, job_id and queue_name are required.'})
+
+            job_settings = JobSettings.objects.filter(job_id=job_id).first()
+
+            clocked_schedule = ClockedSchedule.objects.create(clocked_time=datetime.now())
+
+            # Create PeriodicTask for each ClockedSchedule
+            task_name = str(uuid.uuid4())
+            task, created = PeriodicTask.objects.get_or_create(
+                clocked=clocked_schedule,
+                name=task_name,
+                task=f'celerytasks.tasks.{job_type.lower()}',
+                defaults={'one_off': True},
+                description=job_id,
+                queue=queue_name,
+                exchange=queue_name,
+                args=json.dumps([job_action, task_name, job_id, run_account]),
+            )
+
+            if not created:
+                task.clocked = clocked_schedule
+                task.enabled = True
+                task.queue = queue_name
+                task.save()
+
+            task_detail, created = TaskDetail.objects.get_or_create(job=job_settings, task_name=task_name,
+                                                                    run_date=clocked_schedule.clocked_time)
+            if not created:
+                task_detail.save()
+
+            return JsonResponse(
+                {'status': 'success', 'message': f'Job {job_id} assigned to worker with queue {queue_name}.'})
+
         except KeyError as e:
             return JsonResponse({'status': 'error', 'message': f'Missing parameter: {str(e)}'}, status=400)
         except Exception as e:
@@ -214,30 +208,195 @@ def rrule_schedule_task(request):
         return JsonResponse({'status': 'error', 'message': 'Invalid request method'}, status=405)
 
 
-def get_next_runs(rrule_str, run_count, start_date, end_date):
-    """
-    Calculate the next run times based on the input rrule string, start date, and run count.
+@csrf_exempt
+def force_terminate_task(request):
+    if request.method == 'POST':
+        data = json.loads(request.body)
+        job_id = data.get('job_id')
+        latest_task = get_latest_running_task(job_id)
+        if latest_task is None:
+            return JsonResponse({'status': 'error', 'message': f'No running job found for job_id {job_id}'}, status=404)
 
-    :param rrule_str: The recurrence rule string (RFC 2445 format).
-    :param run_count: The number of next occurrences to find.
-    :param start_date: The start datetime for the recurrence rule.
-    :param end_date: The end datetime for the recurrence rule.
-    :return: A list of next run datetimes.
-    """
-    rule = rrulestr(rrule_str, dtstart=start_date)
-    next_runs = []
+        task_id = latest_task.task_id
+        result = AsyncResult(task_id, app=app)
+        result.revoke(terminate=True, signal='SIGKILL')
+        latest_task.save_status(TaskDetail.STATUS_CANCELLED)
+        return JsonResponse(
+            {'status': 'success', 'message': f'Job {job_id} force terminated with task_id {task_id}.'})
+    return JsonResponse({'status': 'failure', 'message': 'Invalid request method.'})
 
-    current_time = start_date
-    for _ in range(run_count):
-        next_run = rule.after(current_time)
-        if next_run is None or next_run > end_date:
-            break
-        next_runs.append(next_run)
-        current_time = next_run
 
-    return next_runs
+# Mapping dictionary: job_settings_field -> periodic_task_field
+FIELD_MAPPING = {
+    'queue_name': 'queue',
+    'is_enable': 'enabled',
+    # Add more mappings as required
+}
+
+# Fields that only exist in JobSettings
+JOB_SETTINGS_ONLY_FIELDS = {'start_date', 'end_date', 'repeat_interval', 'max_run_duration',
+                            'max_run', 'max_failure', 'auto_drop', 'restart_on_failure',
+                            'restartable', 'priority', 'job_action',
+                            'queue_name', 'user_name', 'retry_delay'}
 
 
 @csrf_exempt
+def update_job(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            logger.info(f'Received request to update job with body {data}')
+            # Get job_id from query parameters
+            job_id = data.get('job_id')
+            if not job_id:
+                return JsonResponse({'status': 'error', 'message': 'job_id parameter is required'}, status=400)
+
+            job_settings = JobSettings.objects.filter(job_id=job_id).first()
+            if not job_settings:
+                return JsonResponse({'status': 'error', 'message': f'Cannot find JobSettings with job_id={job_id}'},
+                                    status=400)
+
+            data = json.loads(request.body)
+
+            # Update TaskDetail objects
+            tasks = PeriodicTask.objects.filter(description=job_id).order_by('id')
+            done_tasks = list(filter(lambda t: t.enabled is False, tasks))
+            last_max_run = len(tasks)
+            if not tasks.exists():
+                return JsonResponse({'status': 'error', 'message': f'No enabled tasks found for job_id {job_id}'},
+                                    status=404)
+
+            max_run = data.get('max_run')
+            if max_run is not None:
+                if len(done_tasks) >= max_run:
+                    return JsonResponse({'status': 'error',
+                                         'message': f'Task has been run {len(done_tasks)} times, Cannot update to minor '
+                                                    f'max_run'},
+                                        status=400)
+
+                if last_max_run > max_run:
+                    # Hard delete tasks to reduce the number to max_run
+                    tasks_to_delete = tasks[max_run:]
+                    logger.info(f'Deleting tasks: {tasks_to_delete}')
+                    PeriodicTask.objects.filter(name__in=[task.name for task in tasks_to_delete]).all().delete()
+
+                if last_max_run < max_run:
+                    not_done_tasks = list(filter(lambda t: t.enabled is True, tasks))
+                    logger.info(f'Deleting not done tasks: {not_done_tasks}')
+                    PeriodicTask.objects.filter(name__in=[task.name for task in not_done_tasks]).all().delete()
+
+                    logger.info(f'Creating new tasks for job_id {job_id}')
+                    rrule_str = data.get('repeat_interval', job_settings.repeat_interval)
+                    run_count = data.get('max_run') - len(done_tasks)
+                    start_date = data.get('start_date', job_settings.start_date)
+                    end_date = data.get('end_date', job_settings.end_date)
+                    # Calculate the next run times
+                    next_runs = get_list_run_date(rrule_str, run_count, start_date, end_date)
+                    # Create a ClockedSchedule for each run time
+                    clocked_schedules = []
+                    celery_tasks = []
+                    for next_run in next_runs:
+                        clocked_schedule = ClockedSchedule.objects.create(clocked_time=next_run)
+                        clocked_schedules.append(clocked_schedule)
+                        celery_be_task = CeleryBeTask(celery_task_name=str(uuid.uuid4()), run_date=next_run)
+                        celery_tasks.append(celery_be_task)
+
+                    # Create PeriodicTask for each ClockedSchedule
+                    # TODO: Refactor
+                    for i, clocked_schedule in enumerate(clocked_schedules):
+                        task_name = celery_tasks[i].celery_task_name
+
+                        task, created = PeriodicTask.objects.get_or_create(
+                            clocked=clocked_schedule,
+                            name=task_name,
+                            task=job_settings.unction_name,
+                            defaults={'one_off': True},
+                            description=job_id,
+                            queue=job_settings.queue_name,
+                            exchange=job_settings.queue_name,
+                            priority=job_settings.priority,
+                            args=json.dumps([job_settings.job_action, task_name, job_id, job_settings.run_account]),
+                        )
+                        if not created:
+                            task.clocked = clocked_schedule
+                            task.enabled = True
+                            task.queue = job_settings.queue_name
+                            task.save()
+            else:
+                for task in tasks:
+                    for key, value in data.items():
+                        if key in FIELD_MAPPING:
+                            task_key = FIELD_MAPPING[key]
+                            if hasattr(task, task_key):
+                                setattr(task, task_key, value)
+                    task.save()
+
+            # Update JobSettings object
+            job_settings = JobSettings.objects.filter(job_id=job_id).first()
+            if job_settings is None:
+                return JsonResponse({'status': 'error', 'message': f'No job found for job_id {job_id}'}, status=404)
+
+            for key, value in data.items():
+                if key in FIELD_MAPPING:
+                    if hasattr(job_settings, key):
+                        setattr(job_settings, key, value)
+                elif key in JOB_SETTINGS_ONLY_FIELDS:
+                    setattr(job_settings, key, value)
+
+            job_settings.save()
+
+            return JsonResponse(
+                {'status': 'success', 'message': f'Job {job_id} and related tasks updated successfully.'})
+
+        except json.JSONDecodeError:
+            return JsonResponse({'status': 'error', 'message': 'Invalid JSON format'}, status=400)
+        except Exception as e:
+            return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+    else:
+        return JsonResponse({'status': 'error', 'message': 'Invalid request method'}, status=405)
+
+
+def get_latest_running_task(job_id):
+    job_settings = JobSettings.objects.filter(job_id=job_id).first()
+    latest_job = TaskDetail.objects.filter(job=job_settings, status=TaskDetail.STATUS_RUNNING).order_by(
+        '-run_date').first()
+    return latest_job
+
+
+def get_request_data(request, required_fields):
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        raise ValueError("Invalid JSON format")
+    missing_fields = [field for field in required_fields if field not in data]
+    if missing_fields:
+        raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
+
+    return {field: data[field] for field in required_fields}
+
+
 def health_check(request):
     return JsonResponse({"status": "ok"})
+
+
+def convert_task_detail_to_log_data(task_detail, job_settings, result, operation):
+    try:
+        return {
+            "job_id": task_detail.job.job_id,
+            "operation": operation,
+            "status": task_detail.status,
+            "user_name": task_detail.run_account,
+            "error_no": job_settings.failure_count,
+            "req_start_date": task_detail.created_at.isoformat(),
+            "actual_start_date": task_detail.run_date.isoformat(),
+            "run_duration": str(task_detail.run_duration) if task_detail.run_duration else None,
+            "additional_info": "abc",
+            "errors": str(result) if job_settings.failure_count > 0 else None,
+            "output": str(result),
+            "run_count": job_settings.run_count,
+            "failure_count": job_settings.failure_count,
+            "retry_count": job_settings.retry_count,
+        }
+    except Exception as e:
+        logger.error(f'Error in converting task detail to log data: {e}')
+        return None

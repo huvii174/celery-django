@@ -1,16 +1,10 @@
 from django.urls import path
-from .views import (create_interval_task,
-                    create_cron_task, update_task,
-                    delete_task, assign_task_to_worker,
-                    rrule_schedule_task, health_check, force_terminate_task)
+from .views import (health_check, rrule_schedule_task, manually_run, force_terminate_task, update_job)
 
 urlpatterns = [
-    path('create_interval_task/', create_interval_task, name='create_interval_task'),
-    path('rrule_schedule_task/', rrule_schedule_task, name='rrule_schedule_task'),
-    path('create_cron_task/', create_cron_task, name='create_cron_task'),
-    path('force_terminate_task/', force_terminate_task, name='force_terminate_task'),
-    path('update_task/<int:task_id>/', update_task, name='update_task'),
-    path('delete_task/<int:task_id>/', delete_task, name='delete_task'),
-    path('assign_task_to_worker/', assign_task_to_worker, name='assign_task_to_worker'),
+    path('create_rrule_task/', rrule_schedule_task, name='rrule_schedule_task'),
+    path('force_stop/', force_terminate_task, name='force_stop'),
+    path('manually_run/', manually_run, name='manually_run'),
     path('health/', health_check, name='health_check'),
+    path('update_job/', update_job, name='update_job'),
 ]
